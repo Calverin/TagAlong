@@ -17,99 +17,81 @@
 
 <div class="container">
     <h1>XIAO Proximity Radar</h1>
-    <p>Track distance accurately using your device's Bluetooth receiver.</p>
+    <p>Track distance using raw Bluetooth beacon tracking.</p>
     
-    <button id="connectBtn">Connect to XIAO</button>
+    <button id="startBtn">Start Scanning Radar</button>
     
-    <div id="radar" class="radar-display">--</div>
-    <div id="status" class="status">Disconnected</div>
+    <div id="radar" class="radar-display">OFF</div>
+    <div id="status" class="status">Radar Standby</div>
 </div>
 
 <script>
-let bluetoothDevice = null;
-let uartCharacteristic = null;
-let rssiInterval = null;
-
-// Standard Nordic UART Service UUIDs used by CircuitPython
 const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const TX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Phone out to XIAO
+const TX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+let lastSentCommand = '';
 
-document.getElementById('connectBtn').addEventListener('click', async () => {
+document.getElementById('startBtn').addEventListener('click', async () => {
     try {
-        document.getElementById('status').innerText = "Searching for XIAO-Radar...";
+        document.getElementById('status').innerText = "Initializing Bluetooth Scan...";
         
-        // Request the specific XIAO device
-        bluetoothDevice = await navigator.bluetooth.requestDevice({
+        // Use scanning architecture to avoid browser connection blocks
+        const scan = await navigator.bluetooth.requestLEScan({
             filters: [{ name: 'XIAO-Radar' }],
-            optionalServices: [UART_SERVICE_UUID]
+            keepRepeatedDevices: true
         });
 
-        const server = await bluetoothDevice.gatt.connect();
-        const service = await server.getPrimaryService(UART_SERVICE_UUID);
-        uartCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
-        
-        document.getElementById('status').innerText = "Connected!";
-        document.getElementById('connectBtn').style.display = 'none';
+        document.getElementById('status').innerText = "Radar Scanning Active!";
+        document.getElementById('startBtn').style.display = 'none';
 
-        // Start checking the connection's RSSI value every second
-        rssiInterval = setInterval(async () => {
-            if (bluetoothDevice.gatt.connected) {
-                // Read the phone's native receiver RSSI to the XIAO
-                const value = await server.getRSSI(); 
-                updateRadar(value);
-            } else {
-                clearInterval(rssiInterval);
+        navigator.bluetooth.addEventListener('advertisementreceived', event => {
+            if (event.device.name === 'XIAO-Radar') {
+                updateRadar(event.rssi, event.device);
             }
-        }, 1000);
-
-        bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+        });
 
     } catch (error) {
-        console.log(error);
-        document.getElementById('status').innerText = "Connection failed. Try again.";
+        console.error(error);
+        document.getElementById('status').innerText = "Scan failed. Ensure Experimental Web Flags are active.";
     }
 });
 
-function updateRadar(rssi) {
+async function updateRadar(rssi, device) {
     const radarElement = document.getElementById('radar');
-    let command = 'S'; // Default slow
+    let command = 'S';
 
-    // Calculate proximity thresholds based on Phone-Side RSSI
     if (rssi >= -55) {
         radarElement.innerText = "CRITICAL";
-        radarElement.style.borderColor = "#ff3b30"; // Red
+        radarElement.style.borderColor = "#ff3b30";
         radarElement.style.color = "#ff3b30";
-        command = 'F'; // Send 'Fast' flash command
+        command = 'F';
     } else if (rssi >= -75) {
         radarElement.innerText = "NEAR";
-        radarElement.style.borderColor = "#ffcc00"; // Yellow
+        radarElement.style.borderColor = "#ffcc00";
         radarElement.style.color = "#ffcc00";
-        command = 'M'; // Send 'Medium' flash command
+        command = 'M';
     } else {
         radarElement.innerText = "FAR";
-        radarElement.style.borderColor = "#34c759"; // Green
+        radarElement.style.borderColor = "#34c759";
         radarElement.style.color = "#34c759";
-        command = 'S'; // Send 'Slow' flash command
+        command = 'S';
     }
     
     document.getElementById('status').innerText = `Live Signal: ${rssi} dBm`;
-    sendBlinkCommand(command);
-}
 
-async function sendBlinkCommand(cmd) {
-    if (uartCharacteristic) {
-        const encoder = new TextEncoder();
-        await uartCharacteristic.writeValue(encoder.encode(cmd));
+    // Only connect briefly to transmit the change command if the distance state shifts
+    if (command !== lastSentCommand) {
+        lastSentCommand = command;
+        try {
+            const server = await device.gatt.connect();
+            const service = await server.getPrimaryService(UART_SERVICE_UUID);
+            const characteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
+            const encoder = new TextEncoder();
+            await characteristic.writeValue(encoder.encode(command));
+            await server.disconnect(); // Disconnect immediately so the board returns to advertising
+        } catch (e) {
+            console.log("Transmission window busy, retrying next packet...");
+        }
     }
-}
-
-function onDisconnected() {
-    document.getElementById('status').innerText = "Disconnected";
-    document.getElementById('connectBtn').style.display = 'inline-block';
-    document.getElementById('radar').innerText = "--";
-    document.getElementById('radar').style.borderColor = "#333";
-    document.getElementById('radar').style.color = "#fff";
-    clearInterval(rssiInterval);
 }
 </script>
 </body>
