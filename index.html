@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XIAO BLE Radar</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #ffffff; text-align: center; padding: 20px; }
+        .container { max-width: 500px; margin: 0 auto; background: #1e1e1e; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        button { background-color: #007aff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: 0.2s; font-weight: bold; }
+        button:hover { background-color: #0056b3; }
+        .radar-display { margin: 40px auto; width: 200px; height: 200px; border-radius: 50%; border: 4px solid #333; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; transition: 0.3s; }
+        .status { color: #8e8e93; font-size: 14px; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>XIAO Proximity Radar</h1>
+    <p>Track distance accurately using your device's Bluetooth receiver.</p>
+    
+    <button id="connectBtn">Connect to XIAO</button>
+    
+    <div id="radar" class="radar-display">--</div>
+    <div id="status" class="status">Disconnected</div>
+</div>
+
+<script>
+let bluetoothDevice = null;
+let uartCharacteristic = null;
+let rssiInterval = null;
+
+// Standard Nordic UART Service UUIDs used by CircuitPython
+const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Phone out to XIAO
+
+document.getElementById('connectBtn').addEventListener('click', async () => {
+    try {
+        document.getElementById('status').innerText = "Searching for XIAO-Radar...";
+        
+        // Request the specific XIAO device
+        bluetoothDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ name: 'XIAO-Radar' }],
+            optionalServices: [UART_SERVICE_UUID]
+        });
+
+        const server = await bluetoothDevice.gatt.connect();
+        const service = await server.getPrimaryService(UART_SERVICE_UUID);
+        uartCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
+        
+        document.getElementById('status').innerText = "Connected!";
+        document.getElementById('connectBtn').style.display = 'none';
+
+        // Start checking the connection's RSSI value every second
+        rssiInterval = setInterval(async () => {
+            if (bluetoothDevice.gatt.connected) {
+                // Read the phone's native receiver RSSI to the XIAO
+                const value = await server.getRSSI(); 
+                updateRadar(value);
+            } else {
+                clearInterval(rssiInterval);
+            }
+        }, 1000);
+
+        bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    } catch (error) {
+        console.log(error);
+        document.getElementById('status').innerText = "Connection failed. Try again.";
+    }
+});
+
+function updateRadar(rssi) {
+    const radarElement = document.getElementById('radar');
+    let command = 'S'; // Default slow
+
+    // Calculate proximity thresholds based on Phone-Side RSSI
+    if (rssi >= -55) {
+        radarElement.innerText = "CRITICAL";
+        radarElement.style.borderColor = "#ff3b30"; // Red
+        radarElement.style.color = "#ff3b30";
+        command = 'F'; // Send 'Fast' flash command
+    } else if (rssi >= -75) {
+        radarElement.innerText = "NEAR";
+        radarElement.style.borderColor = "#ffcc00"; // Yellow
+        radarElement.style.color = "#ffcc00";
+        command = 'M'; // Send 'Medium' flash command
+    } else {
+        radarElement.innerText = "FAR";
+        radarElement.style.borderColor = "#34c759"; // Green
+        radarElement.style.color = "#34c759";
+        command = 'S'; // Send 'Slow' flash command
+    }
+    
+    document.getElementById('status').innerText = `Live Signal: ${rssi} dBm`;
+    sendBlinkCommand(command);
+}
+
+async function sendBlinkCommand(cmd) {
+    if (uartCharacteristic) {
+        const encoder = new TextEncoder();
+        await uartCharacteristic.writeValue(encoder.encode(cmd));
+    }
+}
+
+function onDisconnected() {
+    document.getElementById('status').innerText = "Disconnected";
+    document.getElementById('connectBtn').style.display = 'inline-block';
+    document.getElementById('radar').innerText = "--";
+    document.getElementById('radar').style.borderColor = "#333";
+    document.getElementById('radar').style.color = "#fff";
+    clearInterval(rssiInterval);
+}
+</script>
+</body>
+</html>
